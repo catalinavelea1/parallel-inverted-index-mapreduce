@@ -1,56 +1,67 @@
+-- Initializations --
 
--- initializari --
-    Sunt procesate datele primite ca argumente si introduse in structura
-GlobalData, care contine toate variabilele care ar fi fost folosite la nivel
-global. Se foloseste vectorul de perechi thread_args pentru a separa
-argumentele specifice fiecarui thread. Un camp pentru id-ul firului de executie
-nu a fost inclus in structura GlobalData pentru a se evita suprascrierea, fiind
-o variabila la care nu vrem sa aiba acces toate threadurile concomitent.
+The data received as arguments is processed and stored in the GlobalData
+structure, which contains all the variables that would otherwise have
+been used globally. The thread_args vector of pairs is used to separate
+the arguments specific to each thread. A field for the thread ID was
+not included in the GlobalData structure to avoid overwriting, since
+it is a variable that we do not want all threads to access concurrently.
 
 -- get_files --
-    Se proceseaza fisierul primit la intrare, care contine toate celelalte
-fisiere, din care vom extrage cuvintele. Aceste fisiere sunt introduse intr-un
-queue, pentru a putea fi distribuite dinamic intre mappers.
+
+The input file containing all the other files from which words will be
+extracted is processed. These files are added to a queue so they can be
+dynamically distributed among the mappers.
 
 -- map_files --
-    Se va completa vectorul de liste partiale, care a primit dimensiunea exacta
-M, deoarece fiecare mapper genereaza lista sa. Se creeaza cate un array
-de cuvinte local, pentru a evita un overhead produs de lock si unlock, in cazul
-in care am fi lucrat direct cu partial_lists, la care au acces toate
-threadurile. Este totusi nevoie de lock atunci cand fiecare thread preia un
-fisier din coada. Astfel, in timp ce un thread este ocupat procesand un fisier
-mai mare, celelalte pot continua extragerea din coada, procesand fisiere mai
-mici in paralel. La acest pas se creeaza doar perechile cuvant fisier, sortatul
-si eliminarea duplicatelor urmand sa fie rezolvate in pasii viitori.
-    Tot la acest pas caracterele fiecarui cuvant sunt transformate astfel incat
-exista doar litere mici si sunt eliminate alte caractere precum _ sau '.
+
+The vector of partial lists is filled. Its size was set to exactly M,
+since each mapper generates its own list. A local array of words is
+created to avoid the overhead caused by locking and unlocking if we
+were to work directly with partial_lists, which is accessible to all
+threads. However, locking is still necessary when each thread retrieves
+a file from the queue. Thus, while one thread is busy processing a
+larger file, the others can continue retrieving files from the queue
+and processing smaller files in parallel. At this stage, only word-file
+pairs are created; sorting and duplicate elimination will be handled
+in later steps.
+
+Also at this stage, the characters of each word are converted to
+lowercase, and other characters such as _ or ' are removed.
 
 -- reduce_files --
-    Din vectorul de liste partiale se distribuie anumite bucati intre reducers.
-Fiecare thread va copia perechile din listele partiale intr-un map local. Este
-folosit un map pentru a se elimina duplicatele. Am ales tot o variabila
-locala, pentru ca nr de lock si unlock ar fi fost foarte mare daca am fi lucrat
-direct cu mapul global, fiind mai multe iteratii la acest pas, in comparatie cu
-pasul in care se copiaza cuvinte din mapul local in cel global. Acesta este si
-pasul in care se creeaza un set de indexi ai fisierelor.
-    In acest punct, fiecare fir de executie de tip reduce a generat propriul
-map specific segmentului sau de cuvinte. Se foloseste lock deoarece fiecare
-fir de executie doreste sa copieze perechile cuvant - id in mapul global care
-reprezinta o zona critica. Am folosit tot un map deoarece atunci cand inseram
-un cuvant acesta va fi gasit in map, daca exista deja, si se va completa
-setul sau de indexi automat. Pentru indexi am folosit set cu scopul de a fi
-sortati crescator atunci cand sunt adaugati si a se elimina duplicatele.
-    Se obtine words_map care contine toate cuvintele cu setul complet de
-indexi, dar trebuie sa ne asiguram ca toate threadurile si-au procesat
-portiunea pana trecem la prelucrarea mapului, asa ca folosim bariera.
-    Pentru a sorta cuvintele care incep cu aceeasi litera in functie de nr de
-indexi, le mutam in vectori specifici fiecarei litere ale alfabetului, pe care
-ii sortam corespunzator.
-    Acesti vectori sunt apoi impartiti din nou intre threaduri si sunt copiate
-cuvintele in fisierele specifice literei.
 
--- lucru cu bariere --
-    Am folosit o bariera separata de dimensiune M + R, pentru a ma asigura ca
-firele de executie de tip reducer nu isi vor incepe executia pana cand toate
-firele de tip map nu isi termina la randul lor sarcinile. Bariera de dimensiune
-R este folosita doar in cadrul operatiilor de tip reduce.
+Certain portions of the vector of partial lists are distributed among
+the reducers. Each thread copies the pairs from the partial lists into
+a local map. A map is used to eliminate duplicates. I also chose a local
+variable because the number of lock and unlock operations would have
+been very high if we had worked directly with the global map, since
+there are more iterations at this stage compared to the step in which
+words are copied from the local map into the global one. This is also
+the stage in which a set of file indices is created.
+
+At this point, each reducer thread has generated its own map
+corresponding to its portion of words. Locking is used because each
+thread needs to copy the word-ID pairs into the global map, which
+represents a critical section. I also used a map here because, when
+inserting a word, it will be found in the map if it already exists,
+and its set of indices will automatically be updated. I used a set
+for the indices so that they are sorted in ascending order when added
+and duplicates are eliminated.
+
+The resulting words_map contains all the words with their complete sets
+of indices, but we must ensure that all threads have finished processing
+their portions before proceeding with the map, so a barrier is used.
+
+To sort the words beginning with the same letter according to the
+number of indices, they are moved into vectors specific to each letter
+of the alphabet, which are then sorted accordingly.
+
+These vectors are then distributed again among the threads, and the
+words are written to the files corresponding to each letter.
+
+-- Working with Barriers --
+
+I used a separate barrier of size M + R to ensure that the reducer
+threads do not begin execution until all mapper threads have completed
+their tasks. The barrier of size R is used only during reduce operations.
